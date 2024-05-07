@@ -38,7 +38,7 @@ public class SimpleAiController {
 }
 ```
 
-### PromptTemplate
+### PromptTemplate（提示模板）
 
 在和大模型对话时，可以使用模版。
 
@@ -77,7 +77,7 @@ public class PromptTemplateController {
 }
 ```
 
-### Role
+### Role（角色）
 
 提示工程可是一门大学问，如何让大模型回答的更好，给他设置一个角色，让他知道他是谁。
 
@@ -121,7 +121,7 @@ public class RoleController {
 }
 ```
 
-### outputParser
+### outputParser（输出解析）
 
 想让大模型更好的被我们所使用，只返回文本太局限了。让他直接返回给我们标准的json或者是map，或者直接映射到对象里。
 
@@ -162,6 +162,65 @@ public class OutputParserController {
 		var prompt = promptTemplate.create();
     // 4、调用call方法并进行解析
 		return outputParser.parse(chatClient.call(prompt).getResult().getOutput().getContent());
+	}
+}
+```
+
+### stuff（填充提示）
+
+将数据合并到提示里，让大模型返回更加准确的并且与上下文相关的响应。
+
+大模型训练的数据到某一时间就结束了，那么最新发布的小米su7，他肯定是一点都不了解的。
+
+在我们和大模型的对话中加上小米su7的内容，那么他就能更准确的回答我们关于小米su7的信息。
+
+```st
+使用以下上下文，并且在最后回答问题。
+如果你不知道答案，就说你不知道，不要当懂哥，不要试图编造答案。
+
+{context}
+
+问题: {question}
+回答:
+```
+
+```java
+@RestController
+public class StuffController {
+
+	private final ChatClient chatClient;
+
+  // 这个文件就是随便网上找的一篇关于小米su7的文章
+	@Value("classpath:/docs/misu7.md")
+	private Resource docsToStuffResource;
+
+	@Value("classpath:/prompts/qa-prompt.st")
+	private Resource qaPromptResource;
+
+	@Autowired
+	public StuffController(ChatClient chatClient) {
+		this.chatClient = chatClient;
+	}
+
+	@GetMapping("/ai/stuff")
+	public ChatResponse completion(@RequestParam(value = "message",
+			defaultValue = "小米公司发布的小米su7汽车有哪些颜色啊？") String message,
+			@RequestParam(value = "stuffit", defaultValue = "false") boolean stuffit) {
+    // 1、创建一个提示模版
+		PromptTemplate promptTemplate = new PromptTemplate(qaPromptResource);
+		Map<String, Object> map = new HashMap<>();
+		map.put("question", message);
+    // 2、stuffit表示是否在提示的时候加上小米su7的信息，方便测试的时候对比效果
+		if (stuffit) {
+			map.put("context", docsToStuffResource);
+		}
+		else {
+			map.put("context", "");
+		}
+    // 3、创建具体的提示
+		Prompt prompt = promptTemplate.create(map);
+    // 4、调用call方法
+		return chatClient.call(prompt);
 	}
 }
 ```
