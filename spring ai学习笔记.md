@@ -36,7 +36,7 @@
 
 ## 最速上手
 
-### 初体验
+### 初体验，源码解析
 
 #### 准备工作
 
@@ -63,18 +63,50 @@ public class SimpleAiController {
 
 	@GetMapping("/ai/simple")
 	public Map<String, String> generation(
-			@RequestParam(value = "message", defaultValue = "一出门就被丘丘人盯上里怎么办") String message) {
+			@RequestParam(value = "message", defaultValue = "ZBC，无情，哈拉少是什么意思") String message) {
     // 直接调用call方法就能开始对话
 		return Map.of("generation", chatClient.call(message));
 	}
 }
 ```
 
-### PromptTemplate（提示模板）
+要看spring ai框架给我们提供了什么能力，可以去看autoconfigure包。
+
+org.springframework.boot.autoconfigure.AutoConfiguration.imports该文件是spring ai框架所支持的哪些第三方的大模型
+
+我们选择使用azure。因为这个同样是提供的openai的接口，并且是在国内可以注册的。相对于chatgpt没那么麻烦。（如果是想使用本地部署的大模型，那么使用ollama）
+
+那么我们只需要引入azure的starter就行了。然后就可以去看AzureOpenAiAutoConfiguration类里面，spring ai给我们提供了那些东西可以。（就是spring里的bean）
+
+- OpenAIClient：azure的SDK，封装的各种http请求
+- AzureOpenAiChatModel：实现了spring ai框架里的chatModel和StreamingChatModel。提供了基础对话功能和流式对话功能。继承了AbstractFunctionCallSupport，拥有方法调用的能力。组合了OpenAiClient（就是有个字段是OpenAIClient）
+- AzureOpenAiEmbeddingModel：嵌入模型。提供嵌入功能
+- FunctionCallbackContext：方法调用的上下文，就是可以理解为是方法的注册中心
+- AzureOpenAiImageModel：AI作画的模型
+
+下面开始正式使用
+
+### 规范我们的输入，让大模型听懂我们的话
+
+总结如下：（生成自AI）
+
+> 写提示，指示清，
+> 示例参考要带齐。
+> 任务分拆步步来，
+> 给点时间慢慢思。
+>
+> 外部工具来助力，
+> 反复迭代问题析。
+> 简明扼要巧安排，
+> 模型聪明更给力。
+
+#### PromptTemplate（提示模板）
 
 在和大模型对话时，可以使用模版。
 
 模版简单理解为，一个字符串，里面有占位符。
+
+这样的话，主题是由我们写程序的人来定的，不会让大模型天马行空。对于用户来说，输入也是有限，能够更好的进行控制。
 
 例如：
 
@@ -97,8 +129,8 @@ public class PromptTemplateController {
 	}
 
 	@GetMapping("/ai/prompt")
-	public ChatResponse completion(@RequestParam(value = "musician", defaultValue = "skrillex") String musician,
-			@RequestParam(value = "songName", defaultValue = "Rumble") String songName) {
+	public ChatResponse completion(@RequestParam(value = "musician", defaultValue = "宇龙") String musician,
+			@RequestParam(value = "songName", defaultValue = "我们去看海") String songName) {
     // 1、创建一个提示模版
 		var promptTemplate = new PromptTemplate(resource);
     // 2、根据模版生成一个具体的提示
@@ -109,7 +141,7 @@ public class PromptTemplateController {
 }
 ```
 
-### Role（角色）
+#### Role（角色）
 
 提示工程可是一门大学问，如何让大模型回答的更好，给他设置一个角色，让他知道他是谁。
 
@@ -153,9 +185,13 @@ public class RoleController {
 }
 ```
 
-### outputParser（输出解析）
+### 你的回合，让大模型输出我们想要的结果
+
+#### outputParser（输出解析）
 
 想让大模型更好的被我们所使用，只返回文本太局限了。让他直接返回给我们标准的json或者是map，或者直接映射到对象里。
+
+第一种方法就是，使用提供的BeanOutputConverter，调用getFormat方法得到一串文本用于替换我们提示模版里的format。（其实就是很直白的告诉大模型，让他返回json格式，然后我们反序列化这个json）
 
 ```st
 给我介绍一下手游三国杀里的武将：{sgsRoleName}
@@ -186,19 +222,35 @@ public class OutputParserController {
 
 	@GetMapping("/ai/output")
 	public SgsRoleCard generate(@RequestParam(value = "sgsRoleName", defaultValue = "界徐盛") String sgsRoleName) {
-    // 1、创建一个输出解析器，这里选择解析为bean（还可以选择为json或者map）
-		var outputParser = new BeanOutputParser<>(SgsRoleCard.class);
-    // 2、创建一个模版，把解析器里的format也传进去
-		var promptTemplate = new PromptTemplate(resource, Map.of("sgsRoleName", sgsRoleName, "format", outputParser.getFormat()));
-    // 3、创建具体的prompt
+    // 1、创建一个输出解析器，这里选择解析为bean（还可以选择为list或者map）
+		BeanOutputConverter<SgsRoleCard> outputConverter = new BeanOutputConverter<>(SgsRoleCard.class);
+		// 2、创建一个模版，把解析器里的format也传进去
+		var promptTemplate = new PromptTemplate(resource, Map.of("sgsRoleName", sgsRoleName, "format", outputConverter.getFormat()));
+		// 3、创建具体的prompt
 		var prompt = promptTemplate.create();
-    // 4、调用call方法并进行解析
-		return outputParser.parse(chatClient.call(prompt).getResult().getOutput().getContent());
+		// 4、调用call方法并进行解析
+		return outputConverter.convert(chatModel.call(prompt).getResult().getOutput().getContent());
 	}
 }
 ```
 
-### stuff（填充提示）
+第二种方法，使用spring ai框架提供的chatClient，不需要再创建解析器，也不用在模版里加上format。（虽然这个方法也是在底层创建解析器，但是不需要我们自己创建了）
+
+```java
+@GetMapping("/ai/output2")
+public SgsRoleCard generate2(@RequestParam(value = "sgsRoleName", defaultValue = "界徐盛") String sgsRoleName) {
+	return chatClient.prompt()
+			.user(e -> e.text("给我介绍一下手游三国杀里的武将：{sgsRoleName}").param("sgsRoleName", sgsRoleName))
+			.call()
+			.entity(SgsRoleCard.class);
+}
+```
+
+### 无知的你，让我为你灌输知识吧
+
+大模型在他训练完成那一刻，就已经封存了。他所知道的所有知识都是那一个时间点之前的。当你询问他现在发生的一些事时，他要是回答不知道那还好，要是他硬是编造一些东西出来，对于真假还这不好分辨。有效的解决幻觉问题，可以使用微调技术。微调技术是要对大模型本身动刀子，需要算力资源，需要大量数据，需要时间，对于个人开发者来说基本不太现实，各大平台提供了微调的api，但是价格也比较贵。所以另辟蹊径，大模型不知道的东西，我们可以在问他的时候，直接传给他，他就知道了。
+
+#### stuff（填充提示）
 
 将数据合并到提示里，让大模型返回更加准确的并且与上下文相关的响应。
 
@@ -257,7 +309,7 @@ public class StuffController {
 }
 ```
 
-### rag（检索增强生成）
+#### rag（检索增强生成）
 
 一次性发那么多文字给大模型，那都是要钱的。咱们其实只需要发送一篇文章里最关键的那些句子发送给大模型就行了。
 
@@ -272,4 +324,6 @@ public class StuffController {
   - DocumentWriter：保存数据的，一般是保存到向量数据库
 
 之后再使用的时候，就使用 相似查找 的功能从矢量数据库里查，查出来的结果整合到咱们给大模型发的消息里
+
+#### function calling（方法调用）
 
