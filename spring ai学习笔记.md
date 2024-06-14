@@ -18,6 +18,10 @@
 
 嵌入。这也是指一种算法。输入是文本，输出是向量（在java里表示为List\<Double\>）。向量就是人和模型之间交流的媒介。嵌入就是将人的语言转换为机器理解的语言。
 
+### VectorStore
+
+向量数据库。专注于存储和查询向量的系统，其向量源于文本、语音、图像等数据的向量化表示。
+
 ### Tokens
 
 将大模型的输入输出分割成更小的单元。类似于编译原理里的词法解析。一个中文字差不多等于一个token，一个英文单词，差不多等于一个token。具体是多少，可以调用官方api进行计算。每个大模型输入就是有限制的，比如限制输入为4k、8k，也有一些支持长文本的，能够达到1M token。token就是钱，计费就是看消耗了多少token
@@ -28,11 +32,25 @@
 
 ### Function Calling
 
-方法调用。让大模型拥有调用方法的能力，能够有效降低大模型的幻觉（不要让他胡说八道）。其实就是调用两次大模型，第一次，告诉他咱们这有哪些方法是可以调用的，传参是什么样的。然后和用户的输入一起发给大模型。大模型返回给我们，调用哪一个方法，参数是什么。然后我们自己执行方法，得到结果。第二次，将结果作为参考内容和用户的输入一起发给大模型。
+方法调用。让大模型拥有调用方法的能力，能够有效降低大模型的幻觉（不要让他胡说八道）
 
 ### Retrieval Augmented Generation（RAG）
 
-检索增强生成。
+检索增强生成。检索：从自己构建的知识库里查找。增强：查找出来的知识和用户的请求组合到一起。生成：让大模型生成回答。
+
+### Agent
+
+在 AI 大模型时代，任何具备独立思考能力并能与环境进行交互的实体，都可以被抽象地描述为智能体（Agent）。智能体构建在大语言模型的推理能力基础上，对大语言模型的 Planning 规划的方案使用工具执行（Action） ，并对执行的过程进行观测（Observation），保证任务的落地执行。
+
+### 对比
+
+| 要解决的问题   | 举例             | 人的思路 | 大模型的思路       |
+| -------------- | ---------------- | -------- | ------------------ |
+| 布置任务       | 查数据           | 对话     | Prompt Engineering |
+| 新知识，记不住 | 公司内部员工手册 | 学习资料 | RAG                |
+| 深度理解       | 学习新语言       | 学习     | Fine-tuning        |
+| 对接外界       | 查询天气         | 查询工具 | Function Calling   |
+| 解决复杂问题   | 工程项目         | 综合能力 | Agent              |
 
 ## 最速上手
 
@@ -323,7 +341,153 @@ public class StuffController {
 - 存入矢量数据库
   - DocumentWriter：保存数据的，一般是保存到向量数据库
 
-之后再使用的时候，就使用 相似查找 的功能从矢量数据库里查，查出来的结果整合到咱们给大模型发的消息里，再一起发送给大模型
+之后再使用的时候，就使用 相似查找 的功能从矢量数据库里查，查出来的结果整合到咱们给大模型发的消息里，再一起发送给大模型。
+
+```java
+@RestController
+@Slf4j
+public class GIRagController {
+  @Value("classpath:/data/GIRole.json")
+  private Resource resource;
+
+  @Value("classpath:/prompts/system-GI-role.st")
+  private Resource systemGIRolePrompt;
+
+  private final ChatClient chatClient;
+
+  private final VectorStore vectorStore;
+
+  public GIRagController(ChatClient chatClient, VectorStore vectorStore) {
+    this.chatClient = chatClient;
+    this.vectorStore = vectorStore;
+  }
+
+  @GetMapping("/ai/prepare")
+  public void prepare() {
+    // 1、读取文件
+    JsonReader jsonReader = new JsonReader(resource, new GIRoleJsonMetadataGenerator(), "description");
+    List<Document> documents = jsonReader.get();
+
+    // 2、创建embedding并保存到向量数据库
+    vectorStore.add(documents);
+  }
+
+  @GetMapping("/ai/GIRag")
+  public ChatResponse generate(
+      @RequestParam(value = "message", defaultValue = "璃月角色有哪些？简单给我介绍一下吧！") String message,
+      @RequestParam(value = "weapon", defaultValue = "弓") String weapon,
+      @RequestParam(value = "similarityThreshold", defaultValue = "0.0") double similarityThreshold,
+      @RequestParam(value = "topK", defaultValue = "4") int topK) {
+    // 3、检索相关文档
+    List<Document> similarDocuments = vectorStore.similaritySearch(
+        SearchRequest.query(message).withSimilarityThreshold(similarityThreshold).withTopK(topK).withFilterExpression(String.format("weapon == '%s'", weapon)));
+    log.info("Found {} relevant documents.", similarDocuments.size());
+
+    // 4、返回结果
+    return chatClient.prompt().user(userSpec -> userSpec.text(message))
+        .system(systemSpec -> systemSpec.text(systemGIRolePrompt, StandardCharsets.UTF_8)
+            .param("documents", similarDocuments.stream().map(Document::getContent).collect(Collectors.joining("\n"))))
+        .call().chatResponse();
+  }
+}
+```
+
+其中一些关键的解释。元数据信息：可以理解为这段文本的字段。比如有一段文本描述了某个人，那个元数据信息可以有这个人的姓名，性别，身高等。再进行相似性查找时。可以像写sql语句（例如：性别 = ‘男’）一样先筛选一些出来，再做相似性查找。
+
+相似性查找：所有的文本都被转换成了向量（在java里就是List\<Double\>），相似性查找就是判断两个向量的相似性。
+
+- 余弦相似性：向量夹角如何
+
+  - $$
+    \text{cosine similarity}(A, B) = \frac{A \cdot B}{\|A\| \|B\|}  
+    $$
+
+    
+
+- 杰卡德相似性：两个集合的重合度如何
+
+  - $$
+    \text{Jaccard similarity}(A, B) = \frac{|A \cap B|}{|A \cup B|}
+    $$
+
+    
+
+- 欧几里德距离：两个点的直线距离，p，q是两个n维向量
+
+  - $$
+    d(p, q) = \sqrt{\sum_{i=1}^{n} (p_i - q_i)^2}
+    $$
+
+    
+
+- 曼哈顿距离：两个点的距离，p，q是两个n维向量
+
+  - $$
+    d(p, q) = \sum_{i=1}^{n} |p_i - q_i|  
+    $$
+
+- 切比雪夫距离、闵可夫斯基距离、汉明距离、马氏距离等等
+
+在自然语言处理（NLP）这个领域基本上都是使用的是余弦相似性
+
+![](./images/rag.png)
 
 #### function calling（方法调用）
 
+方法调用。让大模型拥有调用方法的能力，能够有效降低大模型的幻觉（不要让他胡说八道）。其实就是调用两次大模型，第一次，告诉他咱们这有哪些方法是可以调用的，传参是什么样的。然后和用户的输入一起发给大模型。大模型返回给我们，调用哪一个方法，参数是什么。然后我们自己执行方法，得到结果。第二次，将结果作为参考内容和用户的输入一起发给大模型。
+
+先写自己要提供的方法
+
+```java
+@Slf4j
+public class CalculateService implements Function<CalculateService.Request, String>{
+  @JsonClassDescription("要进行计算的两个数")
+  public record Request(BigDecimal a, BigDecimal b) {}
+
+  @Override
+  public String apply(Request request) {
+    log.info("成功调用计算服务，参数为：{}", request);
+    BigDecimal add = request.a.multiply(request.a).add(request.b.multiply(request.b));
+    return add.toString();
+  }
+}
+```
+
+然后@Bean交给spring容器
+
+```java
+@Configuration
+public class FunctionCallingConfig {
+  @Bean
+  @Description("计算两个数的平方和") // function description
+  public Function<CalculateService.Request, String> calculate() {
+    return new CalculateService();
+  }
+}
+```
+
+最后在使用的时候加上方法调用就行
+
+```java
+@RestController
+public class FunctionCallingController {
+
+  private final ChatModel chatModel;
+
+  private final ChatClient chatClient;
+
+  @Autowired
+  public FunctionCallingController(@Qualifier("azureOpenAiChatModel") ChatModel ChatModel, ChatClient chatClient) {
+    this.chatModel = ChatModel;
+    this.chatClient = chatClient;
+  }
+
+  @GetMapping("/ai/functionCalling")
+  public Map<String, ChatResponse> generation(
+      @RequestParam(value = "message", defaultValue = "帮我计算45和67的平方和") String message) {
+    return Map.of("generation", chatClient.prompt().user(message).functions("calculate").call().chatResponse());
+  }
+}
+```
+
+![](./images/functioncalling.png)
