@@ -399,7 +399,7 @@ public class GIRagController {
 - 余弦相似性：向量夹角如何
 
   - $$
-    \text{cosine similarity}(A, B) = \frac{A \cdot B}{\|A\| \|B\|}  
+    \text{cosine similarity}(A, B) = \frac{A \cdot B}{\|A\| \|B\|}
     $$
 
     
